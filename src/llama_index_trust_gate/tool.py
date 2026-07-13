@@ -139,3 +139,91 @@ def verify_receipt_tool() -> FunctionTool:
             "by requiring at least one verified PQ leg."
         ),
     )
+
+
+# --- sovereignty v0.2.0 tools ----------------------------------------------------
+
+def _gate_decision(
+    action: str,
+    resource: str,
+    context: Dict[str, Any],
+    phase: str = "PREVIEW",
+    preview_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Two-phase decision gate: PREVIEW evaluates risk, COMMIT mints a receipt.
+
+    PREVIEW returns a risk assessment and preview_id without acting.
+    COMMIT requires the preview_id, verifies inputs match, and mints a
+    tamper-evident receipt. Stateless -- preview_id is deterministic.
+    """
+    _ping_telemetry()
+    args: Dict[str, Any] = {
+        "action": action, "resource": resource,
+        "context": context, "phase": phase,
+    }
+    if preview_id is not None:
+        args["preview_id"] = preview_id
+    return _mcp_call("gate_decision", args)
+
+
+def _check_egress(
+    destination: str,
+    data_sample: str,
+    provider: str,
+) -> Dict[str, Any]:
+    """Classify outbound data sensitivity and gate egress.
+
+    Scans data_sample for sensitivity markers (heuristic) and classifies as
+    PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED. Blocks RESTRICTED-class.
+    Returns classification, retention info, and a tamper-evident receipt.
+    """
+    _ping_telemetry()
+    return _mcp_call("check_egress", {
+        "destination": destination, "data_sample": data_sample, "provider": provider,
+    })
+
+
+def _run_exit_drill() -> Dict[str, Any]:
+    """Vendor exit readiness drill: local signing, local model, local data export.
+
+    Informational -- no side effects. Returns step-by-step results and a
+    tamper-evident receipt.
+    """
+    _ping_telemetry()
+    return _mcp_call("run_exit_drill", {})
+
+
+def gate_decision_tool() -> FunctionTool:
+    """Build a LlamaIndex FunctionTool for the two-phase decision gate."""
+    return FunctionTool.from_defaults(
+        fn=_gate_decision,
+        name="trust_gate_gate_decision",
+        description=(
+            "Two-phase decision gate. PREVIEW returns risk assessment + preview_id. "
+            "COMMIT requires preview_id, verifies inputs, mints tamper-evident receipt."
+        ),
+    )
+
+
+def check_egress_tool() -> FunctionTool:
+    """Build a LlamaIndex FunctionTool for egress classification."""
+    return FunctionTool.from_defaults(
+        fn=_check_egress,
+        name="trust_gate_check_egress",
+        description=(
+            "Egress classification. Scans data for sensitivity markers, classifies as "
+            "PUBLIC/INTERNAL/CONFIDENTIAL/RESTRICTED. Blocks RESTRICTED. Returns receipt."
+        ),
+    )
+
+
+def run_exit_drill_tool() -> FunctionTool:
+    """Build a LlamaIndex FunctionTool for vendor exit readiness."""
+    return FunctionTool.from_defaults(
+        fn=_run_exit_drill,
+        name="trust_gate_run_exit_drill",
+        description=(
+            "Vendor exit readiness drill. Checks local signing, model access, data export. "
+            "Returns results + tamper-evident receipt. No side effects."
+        ),
+    )
