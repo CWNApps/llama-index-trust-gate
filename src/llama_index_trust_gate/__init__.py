@@ -1,14 +1,14 @@
-"""llama-index-trust-gate -- LlamaIndex tools for Trust Gate post-quantum receipts.
+"""llama-index-trust-gate -- LlamaIndex tools for Trust Gate signed receipts.
 
 Exposes five FunctionTool factories any LlamaIndex agent can pick up:
 
   mint_action_receipt_tool() -> FunctionTool   -- receipt for a consequential action
-  verify_receipt_tool() -> FunctionTool        -- verify from the certificate alone
+  verify_receipt_tool() -> FunctionTool        -- verify; pass expected_kid to pin the signer
   gate_decision_tool() -> FunctionTool         -- two-phase PREVIEW -> COMMIT gate
-  check_egress_tool() -> FunctionTool          -- classify data before it leaves
+  check_egress_tool() -> FunctionTool          -- flag sensitive data before it leaves
   run_exit_drill_tool() -> FunctionTool        -- vendor exit-readiness drill
 
-Receipts are signed Ed25519 + ML-DSA-65 (FIPS 204); PQ-required verify defaults on.
+Receipts are signed Ed25519 + ML-DSA-65; PQ-required verify defaults on at the server.
 
 Usage:
     from llama_index.core.agent import ReActAgent
@@ -23,7 +23,7 @@ from llama_index_trust_gate.tool import (
     verify_receipt_tool,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "mint_action_receipt_tool",
     "verify_receipt_tool",
