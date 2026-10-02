@@ -77,10 +77,10 @@ def _mint_action_receipt(
     inputs: Optional[str] = None,
     decision: str = "ACTION_GOVERNED",
 ) -> Dict[str, Any]:
-    """Mint a signed receipt (Ed25519 + ML-DSA-65) for a consequential agent action.
+    """Mint a signed receipt (Ed25519, plus ML-DSA-65 when the server has a post-quantum backend) for a consequential agent action.
 
     Returns the receipt dict; its integrity can be checked offline. The receipt carries a
-    kid; compare it with the kid you trust (verify with expected_kid) to know who signed it.
+    kid; compare it with the kid you trust (verify with expected_kid) to know which key signed it.
     """
     _ping_telemetry()
     args: Dict[str, Any] = {
@@ -126,8 +126,8 @@ def mint_action_receipt_tool() -> FunctionTool:
         fn=_mint_action_receipt,
         name="trust_gate_mint_action_receipt",
         description=(
-            "Mint a signed receipt (Ed25519 + ML-DSA-65) for a consequential agent action. Its "
-            "integrity can be checked offline; to know who signed it, verify it with "
+            "Mint a signed receipt (Ed25519, plus ML-DSA-65 when the server has a post-quantum backend) for a consequential agent action. Its "
+            "integrity can be checked offline; to know which key signed it, verify it with "
             "expected_kid. A receipt is evidence of what was signed, not proof that the action "
             "was safe or met any requirement."
         ),
@@ -191,7 +191,7 @@ def _check_egress(
 
 
 def _run_exit_drill() -> Dict[str, Any]:
-    """Vendor exit readiness drill: local signing, local model, local data export.
+    """Vendor exit readiness drill: local signing key and local model endpoint.
 
     Informational. Returns step-by-step results and a signed receipt; signing creates the
     signing key on first use.
@@ -235,7 +235,8 @@ def run_exit_drill_tool() -> FunctionTool:
         fn=_run_exit_drill,
         name="trust_gate_run_exit_drill",
         description=(
-            "Vendor exit readiness drill. Checks the local signing key, local model access and "
-            "local data export, and signs a receipt (which creates the signing key on first use)."
+            "Vendor exit readiness drill. Checks that the local signing key works (and names the "
+            "post-quantum backend) and whether a local model endpoint is configured (it is not "
+            "contacted), and signs a receipt (which creates the signing key on first use)."
         ),
     )
