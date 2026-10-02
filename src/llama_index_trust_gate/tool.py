@@ -60,6 +60,19 @@ def _mcp_call(method: str, arguments: Dict[str, Any], *, timeout: float = 30.0) 
     return result if isinstance(result, dict) else {"raw": result}
 
 
+def _require_pin_reported(out: Dict[str, Any], expected_kid: Optional[str]) -> Dict[str, Any]:
+    """A server older than 0.3.0 drops arguments it does not know, so a pin it never checked would look
+    like a pass. When a pin was requested and the server accepted the receipt without reporting
+    signer_pinned, raise instead. A refusal (ok false, or an error) is passed through with its reason."""
+    if expected_kid is None:
+        return out
+    body = out.get("result") if isinstance(out.get("result"), dict) else out
+    if isinstance(body, dict) and (body.get("ok") is False or "error" in body or "signer_pinned" in body):
+        return out
+    raise RuntimeError("Trust Gate server did not report signer_pinned, so it ignored expected_kid "
+                       "(it needs Trust Gate MCP 0.3.0 or later). Do not treat this receipt as pinned.")
+
+
 def _ping_telemetry(kind: str = "api") -> None:
     try:
         with httpx.Client(timeout=2.0) as client:
@@ -77,11 +90,10 @@ def _mint_action_receipt(
     inputs: Optional[str] = None,
     decision: str = "ACTION_GOVERNED",
 ) -> Dict[str, Any]:
-    """Mint a post-quantum, tamper-evident receipt for a consequential agent action.
+    """Mint a signed receipt (Ed25519, plus ML-DSA-65 when the server has a post-quantum backend) for a consequential agent action.
 
-    Returns the receipt dict (verifiable offline from the certificate alone).
-    The receipt is signed Ed25519 + ML-DSA-65 and carries a 128-bit kid for
-    offline same-notary identification across receipts.
+    Returns the receipt dict; its integrity can be checked offline. The receipt carries a
+    kid; compare it with the kid you trust (verify with expected_kid) to know which key signed it.
     """
     _ping_telemetry()
     args: Dict[str, Any] = {
@@ -99,19 +111,26 @@ def _mint_action_receipt(
 def _verify_receipt(
     receipt: Dict[str, Any],
     require_pq: Optional[bool] = None,
+    expected_kid: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Verify a Trust Gate receipt from the certificate alone (no DB, no network).
+    """Verify a Trust Gate receipt from the receipt itself (no DB, no network).
 
     require_pq:
       None  -- obey TRUST_GATE_REQUIRE_PQ env on the server (default true)
-      True  -- fail unless at least one PQ leg verifies (defeats Ed25519-only downgrade)
+      True  -- fail unless a post-quantum signature verifies
       False -- Ed25519-only verification is allowed (legacy receipts)
+    expected_kid:
+      kid of the signer you trust; when set, the receipt must be signed by that key and
+      the result reports signer_pinned. Needs server 0.3.0 or later: an older server
+      ignores it, so this raises an error if the server does not report signer_pinned
     """
     _ping_telemetry()
     args: Dict[str, Any] = {"receipt": receipt}
     if require_pq is not None:
         args["require_pq"] = require_pq
-    return _mcp_call("verify_receipt", args)
+    if expected_kid is not None:
+        args["expected_kid"] = expected_kid
+    return _require_pin_reported(_mcp_call("verify_receipt", args), expected_kid)
 
 
 # --- tool factories (the public API) --------------------------------------------------
@@ -121,9 +140,10 @@ def mint_action_receipt_tool() -> FunctionTool:
         fn=_mint_action_receipt,
         name="trust_gate_mint_action_receipt",
         description=(
-            "Mint a post-quantum, tamper-evident receipt for a consequential agent action. "
-            "Returns a receipt verifiable offline from the certificate alone. "
-            "Signed Ed25519 + ML-DSA-65 (FIPS 204)."
+            "Mint a signed receipt (Ed25519, plus ML-DSA-65 when the server has a post-quantum backend) for a consequential agent action. Its "
+            "integrity can be checked offline; to know which key signed it, verify it with "
+            "expected_kid. A receipt is evidence of what was signed, not proof that the action "
+            "was safe or met any requirement."
         ),
     )
 
@@ -134,9 +154,11 @@ def verify_receipt_tool() -> FunctionTool:
         fn=_verify_receipt,
         name="trust_gate_verify_receipt",
         description=(
-            "Verify a Trust Gate receipt from the certificate alone (offline). "
-            "Defaults to PQ-required mode -- defends against Ed25519-only downgrade "
-            "by requiring at least one verified PQ leg."
+            "Verify a Trust Gate receipt from the receipt itself (offline). Returns ok plus the "
+            "values it checked and signer_pinned. Pass expected_kid, the kid of the server you "
+            "trust, to pin the signer: without it anyone's receipt can verify. With require_pq on "
+            "(the server default) it fails unless a post-quantum signature verifies. "
+            "expected_kid needs server 0.3.0 or later: with an older server this tool raises an error instead of reporting a pin."
         ),
     )
 
@@ -150,11 +172,11 @@ def _gate_decision(
     phase: str = "PREVIEW",
     preview_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Two-phase decision gate: PREVIEW evaluates risk, COMMIT mints a receipt.
+    """Two-phase decision gate: PREVIEW returns a verdict, COMMIT signs a receipt and returns a permit.
 
-    PREVIEW returns a risk assessment and preview_id without acting.
-    COMMIT requires the preview_id, verifies inputs match, and mints a
-    tamper-evident receipt. Stateless -- preview_id is deterministic.
+    The verdict (ALLOW, DENY or ESCALATE) comes from the server's read-only allowlist over
+    the action name and resource; GRANTED exists only for ALLOW. It does not observe or block
+    anything. Needs Trust Gate MCP server 0.3.0 or later.
     """
     _ping_telemetry()
     args: Dict[str, Any] = {
@@ -171,11 +193,11 @@ def _check_egress(
     data_sample: str,
     provider: str,
 ) -> Dict[str, Any]:
-    """Classify outbound data sensitivity and gate egress.
+    """Check outbound data for sensitivity markers.
 
-    Scans data_sample for sensitivity markers (heuristic) and classifies as
-    PUBLIC / INTERNAL / CONFIDENTIAL / RESTRICTED. Blocks RESTRICTED-class.
-    Returns classification, retention info, and a tamper-evident receipt.
+    Scans data_sample for a finite list of markers (heuristic) and classifies it
+    NO_MARKERS_FOUND / INTERNAL / CONFIDENTIAL / RESTRICTED. It flags and cannot block.
+    Returns the classification, retention info and a signed receipt.
     """
     _ping_telemetry()
     return _mcp_call("check_egress", {
@@ -184,10 +206,10 @@ def _check_egress(
 
 
 def _run_exit_drill() -> Dict[str, Any]:
-    """Vendor exit readiness drill: local signing, local model, local data export.
+    """Vendor exit readiness drill: local signing key and local model endpoint.
 
-    Informational -- no side effects. Returns step-by-step results and a
-    tamper-evident receipt.
+    Informational. Returns step-by-step results and a signed receipt; signing creates the
+    signing key on first use.
     """
     _ping_telemetry()
     return _mcp_call("run_exit_drill", {})
@@ -199,8 +221,12 @@ def gate_decision_tool() -> FunctionTool:
         fn=_gate_decision,
         name="trust_gate_gate_decision",
         description=(
-            "Two-phase decision gate. PREVIEW returns risk assessment + preview_id. "
-            "COMMIT requires preview_id, verifies inputs, mints tamper-evident receipt."
+            "Two-phase decision gate (needs Trust Gate MCP server 0.3.0 or later). PREVIEW "
+            "returns a verdict (ALLOW, DENY or ESCALATE) and a preview_id without acting. COMMIT "
+            "evaluates the same inputs again, signs a receipt and returns a permit: GRANTED only "
+            "for ALLOW, DENIED for DENY, WITHHELD_PENDING_HUMAN for ESCALATE. It judges the "
+            "action name and resource against a read-only allowlist and does not observe or block "
+            "anything. Treat a GRANTED permit from a server older than 0.3.0 as not evidence."
         ),
     )
 
@@ -211,8 +237,9 @@ def check_egress_tool() -> FunctionTool:
         fn=_check_egress,
         name="trust_gate_check_egress",
         description=(
-            "Egress classification. Scans data for sensitivity markers, classifies as "
-            "PUBLIC/INTERNAL/CONFIDENTIAL/RESTRICTED. Blocks RESTRICTED. Returns receipt."
+            "Egress marker check. Scans data for sensitivity markers and classifies it "
+            "NO_MARKERS_FOUND, INTERNAL, CONFIDENTIAL or RESTRICTED. It flags and cannot block: "
+            "act on a RESTRICTED result yourself. NO_MARKERS_FOUND is not clearance to send."
         ),
     )
 
@@ -223,7 +250,8 @@ def run_exit_drill_tool() -> FunctionTool:
         fn=_run_exit_drill,
         name="trust_gate_run_exit_drill",
         description=(
-            "Vendor exit readiness drill. Checks local signing, model access, data export. "
-            "Returns results + tamper-evident receipt. No side effects."
+            "Vendor exit readiness drill. Checks that the local signing key works (and names the "
+            "post-quantum backend) and whether a local model endpoint is configured (it is not "
+            "contacted), and signs a receipt (which creates the signing key on first use)."
         ),
     )
