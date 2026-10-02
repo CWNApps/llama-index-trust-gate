@@ -8,7 +8,7 @@ Exposes five FunctionTool factories any LlamaIndex agent can pick up:
   check_egress_tool() -> FunctionTool          -- flag sensitive data before it leaves
   run_exit_drill_tool() -> FunctionTool        -- vendor exit-readiness drill
 
-Receipts are signed Ed25519 + ML-DSA-65; PQ-required verify defaults on at the server.
+Receipts are signed with Ed25519, plus ML-DSA-65 when the server has a post-quantum backend; PQ-required verify defaults on at the server.
 
 Usage:
     from llama_index.core.agent import ReActAgent

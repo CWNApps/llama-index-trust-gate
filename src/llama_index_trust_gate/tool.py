@@ -60,6 +60,19 @@ def _mcp_call(method: str, arguments: Dict[str, Any], *, timeout: float = 30.0) 
     return result if isinstance(result, dict) else {"raw": result}
 
 
+def _require_pin_reported(out: Dict[str, Any], expected_kid: Optional[str]) -> Dict[str, Any]:
+    """A server older than 0.3.0 drops arguments it does not know, so a pin it never checked would look
+    like a pass. When a pin was requested and the server accepted the receipt without reporting
+    signer_pinned, raise instead. A refusal (ok false, or an error) is passed through with its reason."""
+    if expected_kid is None:
+        return out
+    body = out.get("result") if isinstance(out.get("result"), dict) else out
+    if isinstance(body, dict) and (body.get("ok") is False or "error" in body or "signer_pinned" in body):
+        return out
+    raise RuntimeError("Trust Gate server did not report signer_pinned, so it ignored expected_kid "
+                       "(it needs Trust Gate MCP 0.3.0 or later). Do not treat this receipt as pinned.")
+
+
 def _ping_telemetry(kind: str = "api") -> None:
     try:
         with httpx.Client(timeout=2.0) as client:
@@ -108,7 +121,8 @@ def _verify_receipt(
       False -- Ed25519-only verification is allowed (legacy receipts)
     expected_kid:
       kid of the signer you trust; when set, the receipt must be signed by that key and
-      the result reports signer_pinned
+      the result reports signer_pinned. Needs server 0.3.0 or later: an older server
+      ignores it, so this raises an error if the server does not report signer_pinned
     """
     _ping_telemetry()
     args: Dict[str, Any] = {"receipt": receipt}
@@ -116,7 +130,7 @@ def _verify_receipt(
         args["require_pq"] = require_pq
     if expected_kid is not None:
         args["expected_kid"] = expected_kid
-    return _mcp_call("verify_receipt", args)
+    return _require_pin_reported(_mcp_call("verify_receipt", args), expected_kid)
 
 
 # --- tool factories (the public API) --------------------------------------------------
@@ -143,7 +157,8 @@ def verify_receipt_tool() -> FunctionTool:
             "Verify a Trust Gate receipt from the receipt itself (offline). Returns ok plus the "
             "values it checked and signer_pinned. Pass expected_kid, the kid of the server you "
             "trust, to pin the signer: without it anyone's receipt can verify. With require_pq on "
-            "(the server default) it fails unless a post-quantum signature verifies."
+            "(the server default) it fails unless a post-quantum signature verifies. "
+            "expected_kid needs server 0.3.0 or later: with an older server this tool raises an error instead of reporting a pin."
         ),
     )
 
